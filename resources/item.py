@@ -2,58 +2,56 @@ import uuid
 from flask import request
 from flask.views import MethodView
 from flask_smorest import Blueprint, abort
-from db import items, stores
+from sqlalchemy.exc import SQLAlchemyError
+
+from schemas import ItemSchema, ItemUpdateSchema
+from models import ItemModel
+from db import db
 
 blp = Blueprint("Items", __name__, description="Operations on items")
 
 
-@blp.route("/item/<string:item_id>")
+@blp.route("/item/<int:item_id>")
 class Item(MethodView):
+    @blp.response(200, ItemSchema)
     def get(self, item_id):
-        try:
-            return items[item_id]
-        except KeyError:
-            abort(404, message="item not found.")
+        item = ItemModel.query.get_or_404(item_id)
+        return item
 
     def delete(self, item_id):
-        try:
-            del items[item_id]
-            return {'message': 'item deleted.'}
-        except KeyError:
-            abort(404, message="item not found.")
-
-    def put(self, item_id):
-        data = request.json()
-        if "price" not in data or "name" not in data:
-            abort(400, message="Bad request. 'price' and 'name' required")
-        try:
-            item = items[item_id]
-            item |= data
-            return item
-        except KeyError:
-            abort(404, message="item not found.")
+        item = ItemModel.query.get_or_404(item_id)
+        db.session.delete(item)
+        db.session.commit()
+        return {"message": "Item deleted."}
+    @blp.arguments(ItemUpdateSchema)
+    @blp.response(200, ItemSchema)
+    def put(self, data, item_id):
+        item = ItemModel.query.get(item_id)
+        if item:
+            item.price = data['price']
+            item.name = data['name']
+        else:
+            item = ItemModel(id=item_id,**data)
+        db.session.add(item)
+        db.session.commit()
+        return item
 
 
 @blp.route("/item")
 class ItemList(MethodView):
+    @blp.response(200, ItemSchema(many=True))
     def get(self):
-        return {'items': list(items.values())}
-        
-    def post(self):
-        data = request.get_json()
-        if (
-            "price" not in data or "store_id" not in data or "name" not in data
-        ):
-            return {"message":"Bad request. Ensure 'price', 'store_id' and 'name' are included in JSON payload."}, 400
-        
-        for item in items.values():
-            if (data["name"] == item["name"] and data["store_id"] == item["store_id"]):
-                abort(400, message="Item already exists.")
-        if data["store_id"] not in stores:
-            abort(404, message="store not found.")
-        item_id = uuid.uuid4().hex
-        new_item = {**data, "id": item_id}
-        items[item_id] = new_item
-        return new_item, 201
+        return ItemModel.query.all()
+
+    @blp.arguments(ItemSchema)
+    @blp.response(201, ItemSchema)
+    def post(self, data):
+        item = ItemModel(**data)
+        try:
+            db.session.add(item)
+            db.session.commit()
+        except SQLAlchemyError:
+            abort(500, message="An error occured while creating item. Item with name already exits.")
+        return item, 201
 
 
